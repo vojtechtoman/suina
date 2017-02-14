@@ -57,16 +57,19 @@
                           (fn [_] \"))))
 
 ;;; [118] BracedURILiteral ::= "Q" "{" [^{}]* "}"
-(s/def ::BracedURILiteral (ws (s/& (s/cat :c1 (literal "Q{")
-                                          :uri (s/* #(xmlchar? % #{\{ \}}))
-                                          :c2 #{\}})
-                                   (s/conformer
-                                    (fn [parsed]
-                                      (:uri parsed))))))
+(s/def ::BracedURILiteral-nonWS (s/& (s/cat :c1 (literal "Q{")
+                                        :uri (s/* #(xmlchar? % #{\{ \}}))
+                                        :c2 #{\}})
+                                 (s/conformer
+                                  (fn [parsed]
+                                    (:uri parsed)))))
+
+(s/def ::BracedURILiteral (ws ::BracedURILiteral-nonWS))
+
 
 ;;; [117] URIQualifiedName ::= BracedURILiteral NCName
-(s/def ::URIQualifiedName (ws (s/& (s/cat :uri ::BracedURILiteral
-                                          :local ::xmlg/NCName)
+(s/def ::URIQualifiedName (ws (s/& (s/cat :uri ::BracedURILiteral-nonWS
+                                          :local ::xmlg/NCName-nonWS)
                                    (s/conformer
                                     (fn [parsed]
                                       parsed)))))

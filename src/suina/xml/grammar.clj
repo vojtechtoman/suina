@@ -96,12 +96,13 @@
 ;;;
 
 ;;; [4] NCName ::= Name - (Char* ':' Char*)
-(s/def ::NCName (ws (s/& ::Name
-                         (s/conformer
-                          (fn [parsed]
-                            (if (some #{\:} parsed)
-                              :clojure.spec/invalid
-                              parsed))))))
+(s/def ::NCName-nonWS (s/& ::Name
+                             (s/conformer
+                              (fn [parsed]
+                                (if (some #{\:} parsed)
+                                  :clojure.spec/invalid
+                                  parsed)))))
+(s/def ::NCName (ws ::NCName-nonWS))
 
 ;;; [11] LocalPart ::= NCName
 (s/def ::LocalPart ::NCName)
