@@ -4,7 +4,19 @@
             [clojure.spec :as s]))
 
 
-(defn- genkw []
+(defn get-nested
+  [m k]
+  (->> (tree-seq map? #(-> % vals flatten) m)
+       (filter map?)
+       (some k)))
+
+(defn collect-nested
+  [m k]
+  (->> (tree-seq map? #(-> % vals flatten) m)
+       (filter map?)
+       (map k))) 
+
+(defn genkw []
   (keyword (gensym)))
 
 (defmacro literal [str]
@@ -28,6 +40,33 @@
            (s/conformer
             (fn [~parsed#]
               (:body ~parsed#)))))))
+
+;; simple choices: X | Y | Z | ...
+(defmacro simple-choice [& specs]
+  (let [keywords (repeatedly genkw)
+        pairs# (interleave keywords specs)
+        parsed# (gensym)]
+    `(s/& (s/alt ~@pairs#)
+          (s/conformer
+           (fn [~parsed#]
+             (second ~parsed#))))))
+
+;; simple 1-or-more SEP-separated lists: X (SEP X)*
+(defmacro separated-list-of [spec separator]
+  (let [s# (genkw)
+        rest# (genkw)
+        sep# (genkw)
+        parsed# (gensym "parsed")]
+    `(s/& (s/cat ~s# ~spec
+                 ~rest# (s/* (s/cat ~sep# ~separator
+                                    ~s# ~spec)))
+          (s/conformer
+           (fn [~parsed#]
+             (collect-nested ~parsed# ~s#))))))
+
+;; simple 1-or-more comma-separated lists: X ("," X)*
+(defmacro comma-separated-list-of [spec]
+  `(separated-list-of ~spec (ws #{\,})))
 
 ;;;
 ;;; Grammar rules from 'Extensible Markup Language (XML) 1.0' (https://www.w3.org/TR/REC-xml)

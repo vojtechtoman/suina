@@ -5,6 +5,9 @@
             [suina.xml.grammar :as xmlg]
             [suina.xpath.grammar :as xpathg]))
 
+(defn explain [spec expr]
+  (s/explain-str spec (seq expr)))
+
 (defn parses? [rule expr]
   (let [s (seq expr)
         res (s/conform rule s)]
@@ -44,7 +47,11 @@
       ::xpathg/DecimalLiteral "123.456"
       ::xpathg/IntegerLiteral "123"
       ::xpathg/EQName "foo:bar"
-      ::xpathg/EQName "Q{foo}bar")))
+      ::xpathg/EQName "Q{foo}bar"
+      ::xpathg/AnyArrayTest "array(*)"
+      ::xpathg/AnyArrayTest " array  ( * ) "
+
+      )))
 
 (deftest parse-invalid
   (testing "parsing of invalid instances with respect to the XPath grammar"
