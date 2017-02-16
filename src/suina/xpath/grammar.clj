@@ -367,7 +367,7 @@
 ;; [90] AttributeTest ::= "attribute" "(" (AttribNameOrWildcard ("," TypeName)?)? ")"
 (s/def ::AttributeTest (s/cat :c1 (ws (literal "attribute"))
                               :c2 (ws #{\(})
-                              :args (s/? (s/cat :ew ::AttributeNameOrWildcard
+                              :args (s/? (s/cat :ew ::AttribNameOrWildcard
                                                 :rest (s/? (s/cat :comma (ws #{\,})
                                                                   :type ::TypeName))))
                               :c3 (ws #{\)})))
@@ -529,7 +529,7 @@
 (s/def ::NumericLiteral (simple-choice ::IntegerLiteral ::DecimalLiteral ::DoubleLiteral))
 
 ;; [57] Literal ::= NumericLiteral | StringLiteral
-(s/def ::Literal (simple-choice ::NumericLiteral ::StringlLiteral))
+(s/def ::Literal (simple-choice ::NumericLiteral ::StringLiteral))
 
 ;; [56] PrimaryExpr ::= Literal | VarRef | ParenthesizedExpr | ContextItemExpr
 ;;                      | FunctionCall | FunctionItemExpr | MapConstructor
@@ -571,15 +571,16 @@
                             :rest (simple-choice ::Predicate ::ArgumentList ::Lookup ::ArrowPostfix)))
 
 ;; [47] Wildcard ::= "*" | (NCName ":" "*") | ("*" ":" NCName) | (BracedURILiteral "*") /* ws: explicit */
-(s/def ::Wildcard (simple-choice (ws #{\*})
-                                 (s/cat :name ::NCName
-                                        :c1 #{\:}
-                                        :c2 (ws #{\*} :after))
-                                 (s/cat :c1 (ws #{\*} :before)
-                                        :c2 #{\:}
-                                        :name ::NCName)
-                                 (s/cat :urilit ::BracedURILiteral
-                                        :c1 (ws #{\*} :after))))
+(s/def ::Wildcard (pp (simple-choice (ws #{\*})
+                                     (s/cat :prefix ::NCName
+                                            :c1 #{\:}
+                                            :local (ws #{\*} :after))
+                                     (s/cat :prefix (ws #{\*} :before)
+                                            :c2 #{\:}
+                                            :local ::NCName)
+                                     (s/cat :uri ::BracedURILiteral
+                                            :local (ws #{\*} :after)))
+                      #(if (map? %) (select-keys % [:uri :local :prefix]) %)))
 
 ;; [46] NameTest ::= EQName | Wildcard
 (s/def ::NameTest (simple-choice ::EQName ::Wildcard))

@@ -6,15 +6,17 @@
 
 #_(def qt3base "https://dev.w3.org/2011/QT3-test-suite/catalog.xml")
 
-(def xmlzipper (zip/xml-zip (xml/parse "/home/vojtech/Dev/QT3TS/catalog.xml")))
+#_(
+  (def xmlzipper (zip/xml-zip (xml/parse "/home/vojtech/Dev/QT3TS/catalog.xml")))
 
-(defn parse [file]
-  (-> file xml/parse zip/xml-zip))
+  (defn parse [file]
+    (-> file xml/parse zip/xml-zip))
 
-(defn run-ts [catalog]
-  (let [zipper (parse catalog)]))
+  (defn run-ts [catalog]
+    (let [zipper (parse catalog)]))
 
-(deftest a-test
-  
-  (testing "Don't FIXME, I succeed."
-    (is (= 1 1))))
+  (deftest a-test
+    
+    (testing "Don't FIXME, I succeed."
+      (is (= 1 1))))
+   )
