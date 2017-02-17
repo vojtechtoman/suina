@@ -18,9 +18,26 @@
 (defn genkw []
   (keyword (gensym)))
 
+;; (defn- insert-keywords-where-needed [l]
+;;   (loop [prevkw? false src l dest []]
+;;     (if-let [f (first src)]
+;;       (let [r (rest src)
+;;             kw? (and (keyword? f) (not (s/get-spec f)))]
+;;         (if (or prevkw? kw?)
+;;           (recur kw? r (conj dest f))
+;;           (recur true src (conj dest (genkw)))))
+;;       dest)))
+
+
 (defmacro pp [spec fn]
+  "matches spec and calls (fn parsed) on success"
   `(s/& ~spec
         (s/conformer ~fn)))
+
+(defmacro ppc [spec c]
+  "matches spec and returns the constant value c on success"
+  (let [x# (gensym)]
+    `(pp ~spec (fn [~x#] ~c))))
 
 (defmacro todo [spec]
   "throws an exception as reminder of unimplemented (or partially implemented) rules"
@@ -28,21 +45,28 @@
     `(pp ~spec
          (fn [~p#] (throw (UnsupportedOperationException. "TODO"))))))
 
-(defmacro literal [str]
-  (let [keywords# (repeatedly genkw)
-        sets# (map (fn [c] #{c}) (seq str))]
-    `(pp (s/cat ~@(interleave keywords# sets#))
-         #(-> % vals str/join))))
 
 (defmacro ws
   ([spec] `(ws ~spec :both))
-  ([spec wspos]
-   `(pp (s/cat ~@(if (#{:both :before} wspos)
-                   [:before `(s/? ::S)])
-               :body ~spec
-               ~@(if (#{:both :after} wspos)
-                   [:after `(s/? ::S)]))
-        #(:body %))))
+  ([spec ws-spec]
+   (if (= :ws-none ws-spec)
+     `~spec
+     `(pp (s/cat ~@(if (#{:both :ws-before} ws-spec)
+                     [:ws-before `(s/? ::S)])
+                 :body ~spec
+                 ~@(if (#{:both :ws-after} ws-spec)
+                     [:ws-after `(s/? ::S)]))
+          #(:body %)))))
+
+(defmacro lit [l & ws-spec]
+  (if (char? l)
+    `(ws #{~l} ~ws-spec)
+    (let [keywords# (repeatedly genkw)
+          sets# (map (fn [c] #{c}) (seq l))]
+      `(ws (pp (s/cat ~@(interleave keywords# sets#))
+               #(-> % vals str/join)) ~ws-spec))
+    )
+  )
 
 ;; simple choices: X | Y | Z | ...
 (defmacro simple-choice [& specs]
@@ -63,15 +87,25 @@
 
 ;; simple 1-or-more comma-separated lists: X ("," X)*
 (defmacro comma-separated-list-of [spec]
-  `(separated-list-of ~spec (ws #{\,})))
+  `(separated-list-of ~spec (lit \,)))
 
 
 
 (defmacro axis [name]
   (let [kw1# (genkw)
         kv2# (genkw)]
-    `(s/cat ~kw1# (literal ~name)
-            ~kv2# (literal "::"))))
+    `(s/cat ~kw1# (lit ~name :ws-none)
+            ~kv2# (lit "::" :ws-none))))
+
+;;; some helper specs
+(s/def ::_wildcard
+  (pp (lit \*)
+      (fn [_] {:uri \* :local \*})))
+
+(defrecord ASTNode [type data children])
+
+(defn ast-node [type & [data & children]]
+  (ASTNode. type data children))
 
 ;;;
 ;;; Grammar rules from 'Extensible Markup Language (XML) 1.0' (https://www.w3.org/TR/REC-xml)
@@ -155,7 +189,7 @@
 
 ;; [8] PrefixedName ::= Prefix ':' LocalPart 
 (s/def ::PrefixedName (pp (s/cat :prefix ::Prefix
-                                 :colon #{\:}
+                                 :colon (lit \: :ws-none)
                                  :local ::LocalPart)
                           #(select-keys % [:prefix :local])))
 
@@ -191,23 +225,23 @@
 ;; see [7] QName
 
 ;; [121] Comment ::= "(:" (CommentContents | Comment)* ":)"
-(s/def ::Comment (ws (pp (s/cat :c1 (literal "(:")
-                                :contents ::CommentContents
-                                :c2 (literal ":)"))
-                         #(:contents %))))
+(s/def ::Comment (pp (s/cat :c1 (lit "(:" :ws-before)
+                            :contents ::CommentContents
+                            :c2 (lit ":)" :ws-after))
+                     #(ast-node :comment (:contents %))))
 
 ;; [120] EscapeApos ::= "''"
-(s/def ::EscapeApos (pp (literal "''")
-                        (fn [_] \')))
+(s/def ::EscapeApos (ppc (lit "''" :ws-none)
+                         \'))
 
 ;; [119] EscapeQuot ::= '""'
-(s/def ::EscapeQuot (pp (literal "\"\"")
-                        (fn [_] \")))
+(s/def ::EscapeQuot (ppc (lit "\"\"" :ws-none)
+                         \"))
 
 ;; [118] BracedURILiteral ::= "Q" "{" [^{}]* "}"
-(s/def ::BracedURILiteral-nonWS (pp (s/cat :c1 (literal "Q{")
+(s/def ::BracedURILiteral-nonWS (pp (s/cat :c1 (lit "Q{" :ws-none)
                                            :uri (s/* #(xmlchar? % #{\{ \}}))
-                                           :c2 #{\}})
+                                           :c2  (lit \} :ws-none))
                                     #(->> % :uri (apply str))))
 
 (s/def ::BracedURILiteral (ws ::BracedURILiteral-nonWS))
@@ -217,19 +251,19 @@
                                      :local ::NCName-nonWS)))
 
 ;; [116] StringLiteral::= ('"' (EscapeQuot | [^"])* '"') | ("'" (EscapeApos | [^'])* "'")
-(s/def ::StringLiteral (ws (pp (simple-choice (s/cat :openquot #{\"}
-                                                     :str (s/* (simple-choice ::EscapeQuot #(xmlchar? % #{\"})))
-                                                     :closequot #{\"})
-                                              (s/cat :openapos #{\'}
-                                                     :str (s/* (simple-choice ::EscapeApos #(xmlchar? % #{\'})))
-                                                     :closequot #{\'}))
-                               (fn [x] (->> x :str (apply str))))))
+(s/def ::StringLiteral (pp (simple-choice (s/cat :openquot (lit \" :ws-before)
+                                                 :str (s/* (simple-choice ::EscapeQuot #(xmlchar? % #{\"})))
+                                                 :closequot (lit \" :ws-after))
+                                          (s/cat :openapos (lit \' :ws-before)
+                                                 :str (s/* (simple-choice ::EscapeApos #(xmlchar? % #{\'})))
+                                                 :closequot (lit \' :ws-after)))
+                           (fn [x] (->> x :str (apply str)))))
 
 ;; [115] DoubleLiteral ::= (("." Digits) | (Digits ("." [0-9]*)?)) [eE] [+-]? Digits
-(s/def ::DoubleLiteral (ws (pp (s/cat :base (simple-choice (s/cat :point #{\.}
+(s/def ::DoubleLiteral (ws (pp (s/cat :base (simple-choice (s/cat :point (lit \. :ws-none)
                                                                   :frac ::Digits)
                                                            (s/cat :int ::Digits
-                                                                  :pointfrac (s/? (s/cat :point #{\.}
+                                                                  :pointfrac (s/? (s/cat :point (lit \. :ws-none)
                                                                                          :frac (s/* digit?)))))
                                       :e #{\e \E}
                                       :sign (s/? #{\+ \-})
@@ -246,18 +280,18 @@
 
 
 ;; [114] DecimalLiteral ::= ("." Digits) | (Digits "." [0-9]*)
-(s/def ::DecimalLiteral (ws (pp (simple-choice (s/cat :point #{\.}
+(s/def ::DecimalLiteral (ws (pp (simple-choice (s/cat :point (lit \. :ws-none)
                                                       :frac ::Digits)
                                                (s/cat :int ::Digits
-                                                      :point #{\.}
+                                                      :point (lit \. :ws-none)
                                                       :frac (s/* digit?)))
-                                                               (fn [x]
-                                 (let [iraw (get-nested x :int)
-                                       i (if (nil? iraw) \0 (apply str iraw))
-                                       fraw (get-nested x :frac)
-                                       f (if (nil? fraw) \0 (apply str fraw))
-                                       all (str i \. f \M)]
-                                   (read-string all))))))
+                                (fn [x]
+                                  (let [iraw (get-nested x :int)
+                                        i (if (nil? iraw) \0 (apply str iraw))
+                                        fraw (get-nested x :frac)
+                                        f (if (nil? fraw) \0 (apply str fraw))
+                                        all (str i \. f \M)]
+                                    (read-string all))))))
 
 ;; [113] IntegerLiteral ::= Digits
 (s/def ::IntegerLiteral (ws (pp ::Digits
@@ -267,54 +301,55 @@
 (s/def ::EQName (simple-choice ::QName ::URIQualifiedName))
 
 ;; [111] ParenthesizedItemType ::= "(" ItemType ")"
-(s/def ::ParenthesizedItemType (todo (s/cat :c1 (ws #{\(})
+(s/def ::ParenthesizedItemType (todo (s/cat :c1 (lit \()
                                             :type ::ItemType
-                                            :c2 (ws #{\)}))))
+                                            :c2 (lit \)))))
 
 ;; [110] TypedArrayTest ::= "array" "(" SequenceType ")"
-(s/def ::TypedArrayTest (todo (s/cat :c1 (ws (literal "array"))
-                                     :c2 (ws #{\(})
+(s/def ::TypedArrayTest (todo (s/cat :c1 (lit "array")
+                                     :c2 (lit \()
                                      :seqtype ::SequenceType
-                                     :c3 (ws #{\)}))))
+                                     :c3 (lit \)))))
 
 ;; [109] AnyArrayTest ::= "array" "(" "*" ")"
-(s/def ::AnyArrayTest (todo (s/cat :c1 (ws (literal "array"))
-                                   :c2 (ws #{\(})
-                                   :c3 (ws #{\*})
-                                   :c4 (ws #{\)}))))
+(s/def ::AnyArrayTest (todo (s/cat :c1 (lit "array")
+                                   :c2 (lit \()
+                                   :c3 (lit \*)
+                                   :c4 (lit \)))))
+
 
 ;; [108] ArrayTest ::= AnyArrayTest | TypedArrayTest
 (s/def ::ArrayTest (simple-choice ::AnyArrayTest ::TypedArrayTest))
 
 ;; [107] TypedMapTest ::= "map" "(" AtomicOrUnionType "," SequenceType ")"
-(s/def ::TypedMapTest (todo (s/cat :c1 (ws (literal "map"))
-                                   :c2 (ws #{\(})
+(s/def ::TypedMapTest (todo (s/cat :c1 (lit "map")
+                                   :c2 (lit \()
                                    :autype ::AtomicOrUnionType
-                                   :c3 (ws #{\,})
+                                   :c3 (lit \,)
                                    :seqtype ::SequenceType
-                                   :c2 (ws #{\)}))))
+                                   :c2 (lit \)))))
 
 ;; [106] AnyMapTest ::= "map" "(" "*" ")"
-(s/def ::AnyMapTest (todo (s/cat :c1 (ws (literal "map"))
-                                 :c2 (ws #{\(})
-                                 :c3 (ws #{\*})
-                                 :c4 (ws #{\)}))))
+(s/def ::AnyMapTest (todo (s/cat :c1 (lit "map")
+                                 :c2 (lit \()
+                                 :c3 (lit \*)
+                                 :c4 (lit \)))))
 
 ;; [105] MapTest ::= AnyMapTest | TypedMapTest
 (s/def ::MapTest (simple-choice ::AnyMapTest ::TypedMapTest))
 
 ;; [104] TypedFunctionTest ::= "function" "(" (SequenceType ("," SequenceType)*)? ")" "as" SequenceType
-(s/def ::TypedFunctionTest (todo (s/cat :c1 (ws (literal "function"))
-                                        :c2 (ws #{\(})
+(s/def ::TypedFunctionTest (todo (s/cat :c1 (lit "function")
+                                        :c2 (lit \()
                                         :argtypes (s/? (comma-separated-list-of ::SequenceType))
-                                        :c3 (ws (literal "as"))
+                                        :c3 (lit "as")
                                         :returntype ::SequenceType)))
 
 ;; [103] AnyFunctionTest ::= "function" "(" "*" ")"
-(s/def ::AnyFunctionTest (todo (s/cat :c1 (ws (literal "function"))
-                                      :c2 (ws #{\(})
-                                      :c3 (ws #{\*})
-                                      :c4 (ws #{\)}))))
+(s/def ::AnyFunctionTest (todo (s/cat :c1 (lit "function")
+                                      :c2 (lit \()
+                                      :c3 (lit \*)
+                                      :c4 (lit \)))))
 
 ;; [102] FunctionTest ::= AnyFunctionTest | TypedFunctionTest
 (s/def ::FunctionTest (simple-choice ::AnyFunctionTest ::TypedFunctionTest))
@@ -335,75 +370,77 @@
 (s/def ::ElementDeclaration ::ElementName)
 
 ;; [96] SchemaElementTest ::= "schema-element" "(" ElementDeclaration ")"
-(s/def ::SchemaElementTest (s/cat :c1 (ws (literal "schema-element"))
-                                  :c2 (ws #{\(})
+(s/def ::SchemaElementTest (s/cat :c1 (lit "schema-element")
+                                  :c2 (lit \()
                                   :decl ::ElementDeclaration
-                                  :c3 (ws #{\)})))
+                                  :c3 (lit \))))
 
 ;; [95] ElementNameOrWildcard ::= ElementName | "*"
-(s/def ::ElementNameOrWildcard (simple-choice ::ElementName (ws #{\*})))
+(s/def ::ElementNameOrWildcard (simple-choice ::ElementName
+                                              ::_wildcard))
 
 ;; [94] ElementTest ::= "element" "(" (ElementNameOrWildcard ("," TypeName "?"?)?)? ")"
-(s/def ::ElementTest (s/cat :c1 (ws (literal "element"))
-                            :c2 (ws #{\(})
+(s/def ::ElementTest (s/cat :c1 (lit "element")
+                            :c2 (lit \()
                             :args (s/? (s/cat :ew ::ElementNameOrWildcard
-                                              :rest (s/? (s/cat :comma (ws #{\,})
+                                              :rest (s/? (s/cat :comma (lit \,)
                                                                 :type ::TypeName
-                                                                :q (s/? (ws #{\?}))))))
-                            :c3 (ws #{\)})))
+                                                                :q (s/? (lit \?))))))
+                            :c3 (lit \))))
 
 ;; [93] AttributeDeclaration ::= AttributeName
 (s/def ::AttributeDeclaration ::AttributeName)
 
 ;; [92] SchemaAttributeTest ::= "schema-attribute" "(" AttributeDeclaration ")"
-(s/def ::SchemaAttributeTest (s/cat :c1 (ws (literal "schema-attribute"))
-                                    :c2 (ws #{\(})
+(s/def ::SchemaAttributeTest (s/cat :c1 (lit "schema-attribute")
+                                    :c2 (lit \()
                                     :decl ::AttributeDeclaration
-                                    :c3 (ws #{\)})))
+                                    :c3 (lit \))))
 
 ;; [91] AttribNameOrWildcard ::= AttributeName | "*"
-(s/def ::AttribNameOrWildcard (simple-choice ::AttributeName (ws #{\*})))
+(s/def ::AttribNameOrWildcard (simple-choice ::AttributeName
+                                             ::_wildcard))
 
 ;; [90] AttributeTest ::= "attribute" "(" (AttribNameOrWildcard ("," TypeName)?)? ")"
-(s/def ::AttributeTest (s/cat :c1 (ws (literal "attribute"))
-                              :c2 (ws #{\(})
+(s/def ::AttributeTest (s/cat :c1 (lit "attribute")
+                              :c2 (lit \()
                               :args (s/? (s/cat :ew ::AttribNameOrWildcard
-                                                :rest (s/? (s/cat :comma (ws #{\,})
+                                                :rest (s/? (s/cat :comma (lit \,)
                                                                   :type ::TypeName))))
-                              :c3 (ws #{\)})))
+                              :c3 (lit \))))
 
 ;; [89] PITest ::= "processing-instruction" "(" (NCName | StringLiteral)? ")"
-(s/def ::PITest (s/cat :c1 (ws (literal "processing-instruction"))
-                       :c2 (ws #{\(})
+(s/def ::PITest (s/cat :c1 (lit "processing-instruction")
+                       :c2 (lit \()
                        :arg (s/? (s/alt :ncname ::NCName
                                         :stringliteral ::StringLiteral))
-                       :c3 (ws #{\)})))
+                       :c3 (lit \))))
 
 ;; [88] NamespaceNodeTest ::= "namespace-node" "(" ")"
-(s/def ::NamespaceNodeTest (todo (s/cat :c1 (ws (literal "namespace-node"))
-                                        :c2 (ws #{\(})
-                                        :c3 (ws #{\)}))))
+(s/def ::NamespaceNodeTest (todo (s/cat :c1 (lit "namespace-node")
+                                        :c2 (lit \()
+                                        :c3 (lit \)))))
 
 ;; [87] CommentTest ::= "comment" "(" ")"
-(s/def ::CommentTest (todo (s/cat :c1 (ws (literal "comment"))
-                                  :c2 (ws #{\(})
-                                  :c3 (ws #{\)}))))
+(s/def ::CommentTest (todo (s/cat :c1 (lit "comment")
+                                  :c2 (lit \()
+                                  :c3 (lit \)))))
 
 ;; [86] TextTest ::= "text" "(" ")"
-(s/def ::TextTest (todo (s/cat :c1 (ws (literal "text"))
-                               :c2 (ws #{\(})
-                               :c3 (ws #{\)}))))
+(s/def ::TextTest (todo (s/cat :c1 (lit "text")
+                               :c2 (lit \()
+                               :c3 (lit \)))))
 
 ;; [85] DocumentTest ::= "document-node" "(" (ElementTest | SchemaElementTest)? ")"
-(s/def ::DocumentTest (todo (s/cat :c1 (ws (literal "document-node"))
-                                   :c2 (ws #{\(})
+(s/def ::DocumentTest (todo (s/cat :c1 (lit "document-node")
+                                   :c2 (lit \()
                                    :arg (s/? (simple-choice ::ElementTest ::SchemaElementTest))
-                                   :c3 (ws #{\)}))))
+                                   :c3 (lit \)))))
 
 ;; [84] AnyKindTest ::= "node" "(" ")"
-(s/def ::AnyKindTest (todo (s/cat :c1 (ws (literal "node"))
-                                  :c2 (ws #{\(})
-                                  :c3 (ws #{\)}))))
+(s/def ::AnyKindTest (todo (s/cat :c1 (lit "node")
+                                  :c2 (lit \()
+                                  :c3 (lit \)))))
 
 
 
@@ -419,48 +456,50 @@
 
 ;; [81] ItemType ::= KindTest | ("item" "(" ")") | FunctionTest | MapTest | ArrayTest
 ;;                   | AtomicOrUnionType | ParenthesizedItemType
-(s/def ::ItemTest (todo (s/cat :c1 (ws (literal "item"))  ; helper
-                               :c2 (ws #{\(})
-                               :c3 (ws #{\)}))))
-(s/def ::ItemType (simple-choice ::KindTest ::ItemTest ::FunctionTest ::MapTest
+(s/def ::_AnyItemTest (ppc (s/cat :c1 (lit "item")  ; helper
+                                  :c2 (lit \()
+                                  :c3 (lit \)))
+                           (ast-node :any-item-test)))
+
+(s/def ::ItemType (simple-choice ::KindTest ::_AnyItemTest ::FunctionTest ::MapTest
                                  ::ArrayTest ::AtomicOrUnionType ::ParenthesizedItemType))
 
 ;; [80] OccurrenceIndicator ::= "?" | "*" | "+"
-(s/def ::OccurrenceIndicator (simple-choice (ws #{\?})
-                                            (ws #{\*})
-                                            (ws #{\+})))
+(s/def ::OccurrenceIndicator (simple-choice (lit \?)
+                                            (lit \*)
+                                            (lit \+)))
 
 ;; [79] SequenceType ::= ("empty-sequence" "(" ")") | (ItemType OccurrenceIndicator?)
-(s/def ::EmptySequence (todo (s/cat :c1 (ws (literal "empty-sequence"))  ;;helper
-                                    :c2 (ws #{\(})
-                                    :c3 (ws #{\)}))))
+(s/def ::_EmptySequence (todo (s/cat :c1 (lit "empty-sequence")  ;;helper
+                                     :c2 (lit \()
+                                     :c3 (lit \)))))
 
-(s/def ::SequenceType (simple-choice ::EmptySequence
+(s/def ::SequenceType (simple-choice ::_EmptySequence
                                      (s/cat :type ::ItemType
                                             :occur (s/? ::OccurrenceIndicator))))
 
 ;; [78] TypeDeclaration ::= "as" SequenceType
-(s/def ::TypeDeclaration (s/cat :as (ws (literal "as"))
+(s/def ::TypeDeclaration (s/cat :as (lit "as")
                                 :type ::SequenceType))
 
 ;; [77] SingleType ::= SimpleTypeName "?"?
 (s/def ::SingleType (s/cat :type ::SimpleTypeNam
-                           :opt (s/? (ws #{\?}))))
+                           :opt (s/? (lit \?))))
 
 ;; [76] UnaryLookup ::= "?" KeySpecifier
-(s/def ::UnaryLookup (s/cat :lookup (ws #{\?})
+(s/def ::UnaryLookup (s/cat :lookup (lit \?)
                             :ks ::KeySpecifier))
 
 ;; [75] CurlyArrayConstructor ::= "array" "{" Expr? "}"
-(s/def ::CurlyArrayConstructor (s/cat :c1 (ws (literal "array"))
-                                      :c2 (ws #{\{})
+(s/def ::CurlyArrayConstructor (s/cat :c1 (lit "array")
+                                      :c2 (lit \{)
                                       :expr (s/? ::Expr)
-                                      :c3 (ws #{\}})))
+                                      :c3 (lit \))))
 
 ;; [74] SquareArrayConstructor ::= "[" (ExprSingle ("," ExprSingle)*)? "]"
-(s/def ::SquareArrayConstructor (s/cat :c1 (ws #{\[})
+(s/def ::SquareArrayConstructor (s/cat :c1 (lit \[)
                                        :ex1 (s/? (comma-separated-list-of ::ExprSingle))
-                                       :c2 (ws #{\]})))
+                                       :c2 (lit \])))
 
 
 ;; [73] ArrayConstructor ::= SquareArrayConstructor | CurlyArrayConstructor
@@ -474,34 +513,34 @@
 
 ;; [70] MapConstructorEntry ::= MapKeyExpr ":" MapValueExpr
 (s/def ::MapConstructorExpr (s/cat :key ::MapKeyExpr
-                                   :comma (ws #{\:})
+                                   :comma (lit \:)
                                    :value ::MapValueExpr))
 
 ;; [69] MapConstructor ::= "map" "{" (MapConstructorEntry ("," MapConstructorEntry)*)? "}"
-(s/def ::MapConstructor (s/cat :c1 (ws (literal "map"))
-                               :c2 (ws #{\{})
+(s/def ::MapConstructor (s/cat :c1 (lit "map")
+                               :c2 (lit \{)
                                :ex1 (s/? (comma-separated-list-of ::MapConstructorEntry))
-                               :c3 (ws #{\}})))
+                               :c3 (lit \))))
 
 ;; [68] InlineFunctionExpr ::= "function" "(" ParamList? ")" ("as" SequenceType)? FunctionBody
-(s/def ::InlineFunctionExpr (s/cat :c1 (ws (literal "function"))
-                                   :c2 (ws #{\(})
+(s/def ::InlineFunctionExpr (s/cat :c1 (lit "function")
+                                   :c2 (lit \()
                                    :params (s/? ::ParamList)
-                                   :c3 (ws #{\)})
-                                   :rtype (s/? (s/cat :as (ws (literal "as"))
+                                   :c3 (lit \))
+                                   :rtype (s/? (s/cat :as (lit "as")
                                                       :type ::SequenceType))
                                    :body ::FunctionBody))
 
 ;; [67] NamedFunctionRef ::= EQName "#" IntegerLiteral
 (s/def ::NamedFunctionRef (s/cat :name ::EQname
-                                 :pound (ws #{\#})
+                                 :pound (lit \#)
                                  :arity ::IntegerLiteral))
 
 ;; [66] FunctionItemExpr ::= NamedFunctionRef | InlineFunctionExpr
 (s/def ::FunctionItemExpr (simple-choice ::NamedFunctionRef ::InlineFunctionExpr))
 
 ;; [65] ArgumentPlaceholder ::= "?"
-(s/def ::ArgumentPlaceholder (ws #{\?}))
+(s/def ::ArgumentPlaceholder (lit \?))
 
 ;; [64] Argument ::= ExprSingle | ArgumentPlaceholder
 (s/def ::Argument (simple-choice ::ExprSingle ::ArgumentPlaceholder))
@@ -511,18 +550,18 @@
                              :args ::ArgumentList))
 
 ;; [62] ContextItemExpr ::= "."
-(s/def ::ContextItemExpr (ws #{\.}))
+(s/def ::ContextItemExpr (lit \.))
 
 ;; [61] ParenthesizedExpr ::= "(" Expr? ")"
-(s/def ::ParenthesizedExpr (s/cat :c1 (ws #{\(})
+(s/def ::ParenthesizedExpr (s/cat :c1 (lit \()
                                   :expr (s/? ::Expr)
-                                  :c2 (ws #{/})))
+                                  :c2 (lit \))))
 
 ;; [60] VarName ::= EQName
 (s/def ::VarName ::EQName)
 
 ;; [59] VarRef ::= "$" VarName
-(s/def ::VarRef (s/cat :c1 (ws #{\$})
+(s/def ::VarRef (s/cat :c1 (lit \$)
                        :var ::VarName))
 
 ;; [58] NumericLiteral ::= IntegerLiteral | DecimalLiteral | DoubleLiteral
@@ -542,44 +581,44 @@
 (s/def ::ArrowFunctionSpecifier (simple-choice ::EQName ::VarRef ::ParenthesizedExpr))
 
 ;; [54] ArrowPostfix ::= "=>" ArrowFunctionSpecifier ArgumentList
-(s/def ::ArrowPostfix (s/cat :c1 (ws (literal "=>"))
+(s/def ::ArrowPostfix (s/cat :c1 (lit "=>")
                              :spec ::ArrowFunctionSpecifier
                              :args ::ArgumentList))
 
 ;; [53] KeySpecifier ::= NCName | IntegerLiteral | ParenthesizedExpr | "*"
-(s/def ::KeySpecifier (simple-choice ::NCName ::IntegerLiteral ::ParenthesizedExpr (ws #{\*})))
+(s/def ::KeySpecifier (simple-choice ::NCName ::IntegerLiteral ::ParenthesizedExpr (lit \*)))
 
 ;; [52] Lookup ::= "?" KeySpecifier
-(s/def ::Lookup (s/cat :c1 (ws #{\?})
+(s/def ::Lookup (s/cat :c1 (lit \?)
                        :spec ::KeySpecifier))
 
 ;; [51] Predicate ::= "[" Expr "]"
-(s/def ::Predicate (s/cat :c1 (ws #{\[})
+(s/def ::Predicate (s/cat :c1 (lit \[)
                           :expr ::Expr
-                          :c1 (ws #{\]})))
+                          :c1 (lit \])))
 
 ;; [50] PredicateList ::= Predicate*
 (s/def ::PredicateList (s/* ::Predicate))
 
 ;; [49] ArgumentList ::= "(" (Argument ("," Argument)*)? ")"
-(s/def ::ArgumentList (s/cat :c1 (ws #{\(})
+(s/def ::ArgumentList (s/cat :c1 (lit \()
                              :args (comma-separated-list-of ::Argument)
-                             :c2 (ws #{\)})))
+                             :c2 (lit \))))
 
 ;; [48] PostfixExpr ::= PrimaryExpr (Predicate | ArgumentList | Lookup | ArrowPostfix)*
 (s/def ::PostfixExpr (s/cat :expr ::PrimaryExpr
                             :rest (simple-choice ::Predicate ::ArgumentList ::Lookup ::ArrowPostfix)))
 
 ;; [47] Wildcard ::= "*" | (NCName ":" "*") | ("*" ":" NCName) | (BracedURILiteral "*") /* ws: explicit */
-(s/def ::Wildcard (pp (simple-choice (ws #{\*})
+(s/def ::Wildcard (pp (simple-choice ::_wildcard
                                      (s/cat :prefix ::NCName
-                                            :c1 #{\:}
-                                            :local (ws #{\*} :after))
-                                     (s/cat :prefix (ws #{\*} :before)
-                                            :c2 #{\:}
+                                            :c1 (lit \: :ws-none)
+                                            :local (lit \* :ws-after))
+                                     (s/cat :prefix (lit \* :ws-before)
+                                            :c2 (lit \: :ws-none)
                                             :local ::NCName)
                                      (s/cat :uri ::BracedURILiteral
-                                            :local (ws #{\*} :after)))
+                                            :local (lit \* :ws-after)))
                       #(if (map? %) (select-keys % [:uri :local :prefix]) %)))
 
 ;; [46] NameTest ::= EQName | Wildcard
@@ -589,7 +628,7 @@
 (s/def ::NodeTest (simple-choice ::KindTest ::NameTest))
 
 ;; [44] AbbrevReverseStep ::= ".."
-(s/def ::AbbrevReverseStep (ws (literal "..")))
+(s/def ::AbbrevReverseStep (lit ".."))
 
 ;; [43] ReverseAxis ::= ("parent" "::") | ("ancestor" "::") | ("preceding-sibling" "::") | ("preceding" "::") | ("ancestor-or-self" "::")
 (s/def ::ReverseAxis (simple-choice (axis "parent") (axis "preceding-sibling")
@@ -601,7 +640,7 @@
                                     ::AbbrevReverseStep))
 
 ;; [41] AbbrevForwardStep ::= "@"? NodeTest
-(s/def ::AbbrevForwardStep (s/cat :attr? (ws #{\@})
+(s/def ::AbbrevForwardStep (s/cat :attr? (lit \@)
                                   :nodetest ::NodeTest))
 
 ;; [40] ForwardAxis ::= ("child" "::") | ("descendant" "::") | ("attribute" "::") | ("self" "::") | ("descendant-or-self" "::") | ("following-sibling" "::") | ("following" "::") | ("namespace" "::")
@@ -623,96 +662,96 @@
 
 ;; [36] RelativePathExpr ::= StepExpr (("/" | "//") StepExpr)*
 ;; FIXME
-(s/def ::RelativePathExpr (separated-list-of ::StepExpr (simple-choice (ws #{\/}) (ws (literal "//")))))
+(s/def ::RelativePathExpr (separated-list-of ::StepExpr (simple-choice (lit \/) (lit "//"))))
 
 ;; [35] PathExpr ::= ("/" RelativePathExpr?) | ("//" RelativePathExpr) | RelativePathExpr /* xgc: leading-lone-slash */
 ;; FIXME
-(s/def ::PathExpr (simple-choice (s/cat :c1 (ws #{\/})
+(s/def ::PathExpr (simple-choice (s/cat :c1 (lit \/)
                                         :pathexpr (s/? ::RelativePathExpr))
-                                 (s/cat :c1 (ws (literal "//"))
+                                 (s/cat :c1 (lit "//")
                                         :pathexpr ::RelativePathExpr)
                                  :pathexpr ::RelativePathExpr))
 
 ;; [34] SimpleMapExpr ::= PathExpr ("!" PathExpr)*
-(s/def ::SimpleMapExpr (separated-list-of ::PathExpr (ws #{\!})))
+(s/def ::SimpleMapExpr (separated-list-of ::PathExpr (lit \!)))
 
 ;; [33] NodeComp ::= "is" | "<<" | ">>"
-(s/def ::NodeComp (simple-choice (ws (literal "is"))
-                                 (ws (literal "<<"))
-                                 (ws (literal ">>"))))
+(s/def ::NodeComp (simple-choice (lit "is")
+                                 (lit "<<")
+                                 (lit ">>")))
 
 ;; [32] ValueComp ::= "eq" | "ne" | "lt" | "le" | "gt" | "ge"
-(s/def ::ValueComp (simple-choice (ws (literal "eq"))
-                                  (ws (literal "ne"))
-                                  (ws (literal "lt"))
-                                  (ws (literal "le"))
-                                  (ws (literal "gt"))
-                                  (ws (literal "ge"))))
+(s/def ::ValueComp (simple-choice (lit "eq")
+                                  (lit "ne")
+                                  (lit "lt")
+                                  (lit "le")
+                                  (lit "gt")
+                                  (lit "ge")))
 
 ;; [31] GeneralComp ::= "=" | "!=" | "<" | "<=" | ">" | ">="
-(s/def ::GeneralComp (simple-choice (ws #{\=})
-                                    (ws (literal "!="))
-                                    (ws #{\<})
-                                    (ws (literal "<="))
-                                    (ws #{\>})
-                                    (ws (literal ">="))))
+(s/def ::GeneralComp (simple-choice (lit \=)
+                                    (lit "!=")
+                                    (lit \<)
+                                    (lit "<=")
+                                    (lit \>)
+                                    (lit ">=")))
 
 ;; [30] ValueExpr ::= SimpleMapExpr
 (s/def ::ValueExpr ::SimpleMapExpr)
 
 ;; [29] UnaryExpr ::= ("-" | "+")* ValueExpr
-(s/def ::UnaryExpr (s/cat :signs (simple-choice (ws #{\-}) (ws #{\+}))
+(s/def ::UnaryExpr (s/cat :signs (simple-choice (lit \-) (lit \+))
                           :expr ::ValueExpr))
 
 ;; [28] CastExpr ::= UnaryExpr ( "cast" "as" SingleType )?
 (s/def ::CastExpr (s/cat :expr ::UnaryExpr
-                         :cast (s/? (s/cat :c1 (ws (literal "cast"))
-                                           :c2 (ws (literal "as"))
+                         :cast (s/? (s/cat :c1 (lit "cast")
+                                           :c2 (lit "as")
                                            :type ::SingleType))))
 
 ;; [27] CastableExpr ::= CastExpr ( "castable" "as" SingleType )?
 (s/def ::CastableExpr (s/cat :expr ::CastExpr
-                             :castable (s/? (s/cat :c1 (ws (literal "castable"))
-                                                   :c2 (ws (literal "as"))
+                             :castable (s/? (s/cat :c1 (lit "castable")
+                                                   :c2 (lit "as")
                                                    :type ::SingleType))))
 
 ;; [26] TreatExpr ::= CastableExpr ( "treat" "as" SequenceType )?
 (s/def ::TreatExpr (s/cat :expr ::CastableExpr
-                          :treat (s/? (s/cat :c1 (ws (literal "treat"))
-                                             :c2 (ws (literal "as"))
+                          :treat (s/? (s/cat :c1 (lit "treat")
+                                             :c2 (lit "as")
                                              :type ::SequenceType))))
 
 ;; [25] InstanceofExpr ::= TreatExpr ( "instance" "of" SequenceType )?
 (s/def ::InstanceofExpr (s/cat :expr ::TreatExpr
-                               :instance (s/? (s/cat :c1 (ws (literal "instance"))
-                                                     :c2 (ws (literal "of"))
+                               :instance (s/? (s/cat :c1 (lit "instance")
+                                                     :c2 (lit "of")
                                                      :type ::SequenceType))))
 
 ;; [24] IntersectExceptExpr ::= InstanceofExpr ( ("intersect" | "except") InstanceofExpr )*
-(s/def ::IntersectExceptExpr (separated-list-of ::InstanceofExpr (simple-choice (ws (literal "intersect"))
-                                                                                (ws (literal "except")))))
+(s/def ::IntersectExceptExpr (separated-list-of ::InstanceofExpr (simple-choice (lit "intersect")
+                                                                                (lit "except"))))
 
 ;; [23] UnionExpr ::= IntersectExceptExpr ( ("union" | "|") IntersectExceptExpr )*
-(s/def ::UnionExpr (separated-list-of ::IntersectExceptExpr (simple-choice (ws (literal "union"))
-                                                                           (ws #{\|}))))
+(s/def ::UnionExpr (separated-list-of ::IntersectExceptExpr (simple-choice (lit "union")
+                                                                           (lit \|))))
 
 ;; [22] MultiplicativeExpr ::= UnionExpr ( ("*" | "div" | "idiv" | "mod") UnionExpr )*
-(s/def ::MultiplicativeExpr (separated-list-of ::UnionExpr (simple-choice (ws #{\*})
-                                                                          (ws (literal "div"))
-                                                                          (ws (literal "idiv"))
-                                                                          (ws (literal "mode")))))
+(s/def ::MultiplicativeExpr (separated-list-of ::UnionExpr (simple-choice (lit \*)
+                                                                          (lit "div")
+                                                                          (lit "idiv")
+                                                                          (lit "mode"))))
 
 ;; [21] AdditiveExpr ::= MultiplicativeExpr ( ("+" | "-") MultiplicativeExpr )*
-(s/def ::AdditiveExpr (separated-list-of ::MultiplicativeExpr (simple-choice (ws #{\+})
-                                                                             (ws #{\-}))))
+(s/def ::AdditiveExpr (separated-list-of ::MultiplicativeExpr (simple-choice (lit \+)
+                                                                             (lit \-))))
 
 ;; [20] RangeExpr ::= AdditiveExpr ( "to" AdditiveExpr )?
 (s/def ::RangeExpr (s/cat :expr ::AdditiveExpr
-                          :to (s/? (s/cat :c1 (ws (literal "to"))
+                          :to (s/? (s/cat :c1 (lit "to")
                                           :expr-to ::AdditiveExpr))))
 
 ;; [19] StringConcatExpr ::= RangeExpr ( "||" RangeExpr )*
-(s/def ::StringConcatExpr (separated-list-of ::RangeExpr (ws (literal "||"))))
+(s/def ::StringConcatExpr (separated-list-of ::RangeExpr (lit "||")))
 
 ;; [18] ComparisonExpr ::= StringConcatExpr ( (ValueComp | GeneralComp | NodeComp) StringConcatExpr )?
 (s/def ::ComparisonExpr (s/cat :expr ::StringConcatExpr
@@ -720,60 +759,60 @@
                                                  :expr ::StringConcatExpr))))
 
 ;; [17] AndExpr ::= ComparisonExpr ( "and" ComparisonExpr )*
-(s/def ::AndExpr (separated-list-of ::ComparisonExpr (ws (literal "and"))))
+(s/def ::AndExpr (separated-list-of ::ComparisonExpr (lit "and")))
 
 ;; [16] OrExpr ::= AndExpr ( "or" AndExpr )*
-(s/def ::OrExpr (separated-list-of ::AndExpr (ws (literal "or"))))
+(s/def ::OrExpr (separated-list-of ::AndExpr (lit "or")))
 
 ;; [15] IfExpr ::= "if" "(" Expr ")" "then" ExprSingle "else" ExprSingle
-(s/def ::IfExpr (s/cat :c1 (ws (literal "if"))
-                       :c2 (ws #{\(})
+(s/def ::IfExpr (s/cat :c1 (lit "if")
+                       :c2 (lit \()
                        :expr ::Expr
-                       :c3 (ws #{\)})
-                       :c4 (ws (literal "then"))
+                       :c3 (lit \))
+                       :c4 (lit "then")
                        :then ::ExprSingle
-                       :c5 (ws (literal "else"))
+                       :c5 (lit "else")
                        :else ::ExprSingle))
 
 ;; [14] QuantifiedExpr ::= ("some" | "every") "$" VarName "in" ExprSingle
 ;;                         ("," "$" VarName "in" ExprSingle)* "satisfies" ExprSingle
-(s/def ::QuantifiedExpr (s/cat :some-every (simple-choice (ws (literal "some"))
-                                                          (ws (literal "every")))
-                               :c1 (ws #{\$})
+(s/def ::QuantifiedExpr (s/cat :some-every (simple-choice (lit "some")
+                                                          (lit "every"))
+                               :c1 (lit \$)
                                :bindings (comma-separated-list-of (s/cat :var ::VarName
-                                                                         :c1 (ws (literal "in"))
+                                                                         :c1 (lit "in")
                                                                          :expr ::ExprSingle))
-                               :c1 (ws (literal "satisfies"))
+                               :c1 (lit "satisfies")
                                :expr ::ExprSingle))
 
 ;; [13] SimpleLetBinding ::= "$" VarName ":=" ExprSingle
-(s/def ::SimpleForBinding (s/cat :c1 (ws #{\$})
+(s/def ::SimpleForBinding (s/cat :c1 (lit \$)
                                  :var ::VarName
-                                 :c2 (ws (literal ":="))
+                                 :c2 (lit ":=")
                                  :expr ::ExprSingle))
 
 ;; [12] SimpleLetClause ::= "let" SimpleLetBinding ("," SimpleLetBinding)*
-(s/def ::SimpleLetClause (s/cat :c1 (ws (literal "let"))
+(s/def ::SimpleLetClause (s/cat :c1 (lit "let")
                                 :bindings (comma-separated-list-of ::SimpleLetBinding)))
 
 ;; [11] LetExpr ::= SimpleLetClause "return" ExprSingle
 (s/def ::LetExpr (s/cat :let ::SimpleLetClause
-                        :c1 (ws (literal "return"))
+                        :c1 (lit "return")
                         :expr ::ExprSingle))
 
 ;; [10] SimpleForBinding ::= "$" VarName "in" ExprSingle
-(s/def ::SimpleForBinding (s/cat :c1 (ws #{\$})
+(s/def ::SimpleForBinding (s/cat :c1 (lit \$)
                                  :var ::VarName
-                                 :c2 (ws (literal "in"))
+                                 :c2 (lit "in")
                                  :expr ::ExprSingle))
 
 ;; [9] SimpleForClause ::= "for" SimpleForBinding ("," SimpleForBinding)*
-(s/def ::SimpleForClause (s/cat :let (ws (literal "for"))
+(s/def ::SimpleForClause (s/cat :let (lit "for")
                                 :bindings (comma-separated-list-of ::SimpleForBinding)))
 
 ;; [8] ForExpr ::= SimpleForClause "return" ExprSingle
 (s/def ::ForExpr (s/cat :sfc ::SimpleForClause
-                        :return (ws (literal "return"))
+                        :return (lit "return")
                         :expr ::ExprSingle))
 
 ;; [7] ExprSingle ::= ForExpr | LetExpr | QuantifiedExpr | IfExpr | OrExpr
@@ -783,15 +822,15 @@
 (s/def ::Expr (comma-separated-list-of ::ExprSingle))
 
 ;; [5] EnclosedExpr ::= "{" Expr "}"
-(s/def ::EnclosedExpr (s/cat :c1 (ws #{\{})
+(s/def ::EnclosedExpr (s/cat :c1 (lit \{)
                              :expr ::Expr
-                             :c2 (ws #{\}})))
+                             :c2 (lit \))))
 
 ;; [4] FunctionBody ::= EnclosedExpr
 (s/def ::FunctionBody ::EnclosedExpr)
 
 ;; [3] Param ::= "$" EQName TypeDeclaration?
-(s/def ::Param (s/cat :c1 (ws #{\$})
+(s/def ::Param (s/cat :c1 (lit \$)
                       :name ::EQName
                       :type (s/? ::TypeDeclaration)))
 

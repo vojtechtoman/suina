@@ -26,7 +26,7 @@
     (not= :clojure.spec/invalid res)))
 
 (deftest check-ast-char
-  (testing "checks the constructed ASTs for the XML/XPath production rules"
+  (testing "checks the constructed ASTs for the XML/XPath production rules (various character classes)"
     (are [ast spec expr] (= ast (parse spec expr false))
       \a ::xpathg/Char \a                                                                ; [xml:2]
       \A ::xpathg/NameStartChar \A                                                       ; [xml:4]
@@ -63,7 +63,7 @@
       "foo" ::xpathg/LocalPart "foo"                                                      ; [xmlns:11]
       "fooX" ::xpathg/CommentContents "fooX"                                              ; [126]
       [\1 \2 \3] ::xpathg/Digits "123"                                                    ; [125]
-      ;;::xpathg/Comment "(:fooX:)"
+      (xpathg/ast-node :comment "fooX") ::xpathg/Comment "(:fooX:)"                       ; [121]
       \' ::xpathg/EscapeApos "''"                                                         ; [120]
       \" ::xpathg/EscapeQuot "\"\""                                                       ; [119]
       "foo" ::xpathg/BracedURILiteral "Q{foo}"                                            ; [118]
@@ -85,7 +85,7 @@
       123M ::xpathg/DecimalLiteral "123."
       123.456M ::xpathg/DecimalLiteral "123.456"
       123 ::xpathg/IntegerLiteral "123"                                                   ; [113]
-      {:prefix "foo" :local "bar"} ::xpathg/EQName "foo:bar"
+      {:prefix "foo" :local "bar"} ::xpathg/EQName "foo:bar"                              ; [112]
       {:uri "foo" :local "bar"} ::xpathg/EQName "Q{foo}bar"
       {:prefix "foo" :local "bar"} ::xpathg/TypeName "foo:bar"                            ; [101]
       {:uri "foo" :local "bar"} ::xpathg/TypeName "Q{foo}bar"
@@ -99,12 +99,12 @@
       {:uri "foo" :local "bar"} ::xpathg/ElementDeclaration "Q{foo}bar"
       {:prefix "foo" :local "bar"} ::xpathg/ElementNameOrWildcard "foo:bar"               ; [95]
       {:uri "foo" :local "bar"} ::xpathg/ElementNameOrWildcard "Q{foo}bar"
-      \* ::xpathg/ElementNameOrWildcard "*"
+      {:uri \* :local \*} ::xpathg/ElementNameOrWildcard "*"
       {:prefix "foo" :local "bar"} ::xpathg/AttributeDeclaration "foo:bar"                ; [93]
       {:uri "foo" :local "bar"} ::xpathg/AttributeDeclaration "Q{foo}bar"
       {:prefix "foo" :local "bar"} ::xpathg/AttribNameOrWildcard "foo:bar"                ; [91]
       {:uri "foo" :local "bar"} ::xpathg/AttribNameOrWildcard "Q{foo}bar"
-      \* ::xpathg/AttribNameOrWildcard "*"
+      {:uri \* :local \*} ::xpathg/AttribNameOrWildcard "*"
       \? ::xpathg/OccurrenceIndicator "?"                                                 ; [80]
       \* ::xpathg/OccurrenceIndicator "*"
       \+ ::xpathg/OccurrenceIndicator "+"
@@ -120,13 +120,13 @@
       123.456M ::xpathg/Literal "123.456"
       "foo" ::xpathg/Literal "\"foo\""
       "foo" ::xpathg/Literal "'foo'"
-      \* ::xpathg/Wildcard "*"                                                            ; [47]
+      {:uri \* :local \*} ::xpathg/Wildcard "*"                                           ; [47]
       {:prefix "foo" :local \*} ::xpathg/Wildcard "foo:*"
       {:prefix \* :local "foo"} ::xpathg/Wildcard "*:foo"
       {:uri "foo" :local \*} ::xpathg/Wildcard "Q{foo}*"
       {:prefix "foo" :local "bar"} ::xpathg/NameTest "foo:bar"                            ; [46]
       {:uri "foo" :local "bar"} ::xpathg/NameTest "Q{foo}bar"
-      \* ::xpathg/NameTest "*"
+      {:uri \* :local \*} ::xpathg/NameTest "*"
       {:prefix "foo" :local \*} ::xpathg/NameTest "foo:*"
       {:prefix \* :local "foo"} ::xpathg/NameTest "*:foo"
       {:uri "foo" :local \*} ::xpathg/NameTest "Q{foo}*")))
