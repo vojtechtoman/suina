@@ -1,8 +1,6 @@
 # Suina
 
-An XPork, sorry, [XProc][] processor written in Clojure.
-
-[XProc]: http://www.w3.org/TR/xproc/ 
+An XPath processor written in Clojure.
 
 ## Usage
 
